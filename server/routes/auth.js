@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { body } = require('express-validator');
 const ctrl = require('../controllers/authController');
-const { authenticate, resolveBusiness } = require('../middleware/auth');
+const { authenticate, authorize } = require('../middleware/auth');
 const validate = require('../middleware/validate');
 
 router.post('/login',
@@ -11,6 +11,21 @@ router.post('/login',
   ],
   validate,
   ctrl.login
+);
+
+// Public self-signup. Creates an empty account (no business) — the user then
+// creates their own company at /onboarding.
+router.post('/register',
+  [
+    body('email').isEmail().normalizeEmail(),
+    body('password').isLength({ min: 8 })
+      .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+      .withMessage('Password must have uppercase, lowercase, and number'),
+    body('firstName').notEmpty().trim(),
+    body('lastName').notEmpty().trim(),
+  ],
+  validate,
+  ctrl.register
 );
 
 router.post('/refresh', ctrl.refreshToken);
@@ -46,9 +61,10 @@ router.put('/change-password', authenticate,
 );
 
 // Admin only
-router.get('/users', authenticate, ctrl.listUsers);
+router.get('/users', authenticate, authorize('ADMIN'), ctrl.listUsers);
 router.post('/users',
   authenticate,
+  authorize('ADMIN'),
   [
     body('email').isEmail().normalizeEmail(),
     body('password').isLength({ min: 8 }),

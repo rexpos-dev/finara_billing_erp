@@ -328,6 +328,10 @@ export default function LoginPage() {
                   </button>
                 </form>
 
+                <p className="text-xs text-gray-500 text-center mt-5">
+                  New to Finara? <a href="/register" className="text-blue-600 font-medium">Create an account</a>
+                </p>
+
                 {/* Footer note */}
                 <div className="mt-6 pt-5 border-t border-gray-100 flex items-center justify-between">
                   <p className="text-xs text-gray-400">

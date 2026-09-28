@@ -17,10 +17,16 @@ model Business {
   phone       String?   @db.VarChar(30)
   email       String?   @db.VarChar(150)
   industry    String?   @db.VarChar(80)
+  // Tax registration: 'VAT' (12% VAT-registered) or 'NON_VAT' (percentage tax).
+  // Null = not specified (existing businesses).
+  taxType     String?   @db.VarChar(20)
   // First day this business keeps its books in Finara. Documents dated before
   // it are history only and never post to the GL — see server/utils/glPost.js.
   // Null means no cutover is configured and the guard stays inert.
   booksStartDate DateTime? @db.Date
+  // Subscription paid-through date. Set when an add-business order is approved.
+  // Null = legacy / free business (never locked). Expiry handling is Part 2.
+  paidUntil   DateTime?
   isActive    Boolean   @default(true)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -67,6 +73,7 @@ model User {
 
   auditLogs      AuditLog[]
   userBusinesses UserBusiness[]
+  businessOrders BusinessOrder[]
 
   @@index([email])
   @@map("users")
@@ -130,6 +137,9 @@ model Account {
   expenseItems     ExpenseVoucherItem[]
   cashRequestItems CashRequestItem[]
   cashSales        CashSale[]
+  feeTypes         FeeType[]
+  adjustments      BillingAdjustment[]
+  settlements      PaymentSettlement[]
 
   @@unique([businessId, accountCode])
   @@index([businessId])
@@ -321,6 +331,7 @@ model Customer {
 
   invoices    Invoice[]
   quotations  Quotation[]
+  student     Student?
 
   @@unique([businessId, customerCode])
   @@index([businessId])
@@ -352,6 +363,7 @@ model Invoice {
 
   lines       InvoiceLine[]
   payments    PaymentAR[]
+  installment Installment?
 
   @@index([businessId])
   @@index([customerId])
@@ -386,10 +398,22 @@ model PaymentAR {
   paymentMethod String    @db.VarChar(50)
   reference     String?   @db.VarChar(100)
   notes         String?   @db.Text
+  // A gateway payment is received before it is confirmed and long before it
+  // settles. Without a status there is no way to hold one that has been taken
+  // at the window but not yet verified.
+  status        PaymentStatus @default(POSTED)
   createdAt     DateTime  @default(now())
 
   @@index([invoiceId])
+  @@index([status])
   @@map("payments_ar")
+}
+
+enum PaymentStatus {
+  PENDING
+  VERIFIED
+  POSTED
+  REVERSED
 }
 
 enum InvoiceStatus {
@@ -1232,4 +1256,745 @@ model CashSaleItem {
   @@index([cashSaleId])
   @@index([itemId])
   @@map("cash_sale_items")
+}
+
+// ═══════════════════════════════════════════════════════════
+// SCHOOL BILLING
+// ═══════════════════════════════════════════════════════════
+// Student billing rides on the existing AR pipeline rather than a parallel
+// ledger: every Student owns exactly one Customer row, and each due
+// Installment becomes a real Invoice. Aging, the BIR sales book, GL posting
+// and printing therefore keep working with no school-specific accounting code.
+//
+// Revenue policy (Option B, agreed 2026-09-07): an Assessment is a MEMO
+// document — it computes, prints and schedules but posts nothing. Revenue is
+// earned in the month it is billed, so there is no deferred-income balance to
+// amortise. Cash taken ahead of billing is parked in a liability (2215) by
+// StudentAdvance instead of being recognised early.
+
+model SchoolYear {
+  id         Int      @id @default(autoincrement())
+  businessId Int      @default(1)
+  code       String   @db.VarChar(20)
+  name       String   @db.VarChar(80)
+  startDate  DateTime @db.Date
+  endDate    DateTime @db.Date
+  isCurrent  Boolean  @default(false)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  sections      Section[]
+  feeStructures FeeStructure[]
+  enrollments   Enrollment[]
+
+  @@unique([businessId, code])
+  @@index([businessId])
+  @@map("school_years")
+}
+
+model GradeLevel {
+  id         Int         @id @default(autoincrement())
+  businessId Int         @default(1)
+  code       String      @db.VarChar(20)
+  name       String      @db.VarChar(80)
+  stage      SchoolStage @default(ELEMENTARY)
+  sortOrder  Int         @default(0)
+  isActive   Boolean     @default(true)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  sections      Section[]
+  feeStructures FeeStructure[]
+  enrollments   Enrollment[]
+
+  @@unique([businessId, code])
+  @@index([businessId])
+  @@map("grade_levels")
+}
+
+enum SchoolStage {
+  PRESCHOOL
+  ELEMENTARY
+  JHS
+  SHS
+}
+
+model Section {
+  id           Int        @id @default(autoincrement())
+  businessId   Int        @default(1)
+  schoolYearId Int
+  schoolYear   SchoolYear @relation(fields: [schoolYearId], references: [id])
+  gradeLevelId Int
+  gradeLevel   GradeLevel @relation(fields: [gradeLevelId], references: [id])
+  name         String     @db.VarChar(80)
+  adviser      String?    @db.VarChar(120)
+  capacity     Int?
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  enrollments Enrollment[]
+
+  @@unique([schoolYearId, gradeLevelId, name])
+  @@index([businessId])
+  @@map("sections")
+}
+
+model Student {
+  id           Int           @id @default(autoincrement())
+  businessId   Int           @default(1)
+  studentNo    String        @db.VarChar(30)
+  lrn          String?       @db.VarChar(12)
+  lastName     String        @db.VarChar(80)
+  firstName    String        @db.VarChar(80)
+  middleName   String?       @db.VarChar(80)
+  suffix       String?       @db.VarChar(20)
+  birthDate    DateTime?     @db.Date
+  gender       String?       @db.VarChar(10)
+  address      String?       @db.Text
+  contactPhone String?       @db.VarChar(30)
+  email        String?       @db.VarChar(150)
+  // The AR bridge. Every student has exactly one Customer so that invoices,
+  // payments and aging need no school-specific branch.
+  customerId   Int           @unique
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  status       StudentStatus @default(APPLICANT)
+  notes        String?       @db.Text
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  guardians   Guardian[]
+  enrollments Enrollment[]
+  assessments Assessment[]
+  advances    StudentAdvance[]
+  ledger      StudentLedger[]
+  adjustments BillingAdjustment[]
+  refunds     Refund[]
+
+  @@unique([businessId, studentNo])
+  @@index([businessId])
+  @@index([lastName, firstName])
+  @@index([lrn])
+  @@map("students")
+}
+
+// The student lifecycle, per the blueprint's status flow:
+//   APPLICANT → ADMITTED → ENROLLED → ACTIVE → COMPLETED
+//                                        └→ GRADUATED | TRANSFERRED | WITHDRAWN
+// A student is never deleted; leaving the school is a status, not a removal.
+enum StudentStatus {
+  APPLICANT
+  ADMITTED
+  ENROLLED
+  ACTIVE
+  COMPLETED
+  GRADUATED
+  TRANSFERRED
+  WITHDRAWN
+  INACTIVE
+}
+
+model Guardian {
+  id             Int      @id @default(autoincrement())
+  studentId      Int
+  student        Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  name           String   @db.VarChar(150)
+  relationship   String?  @db.VarChar(50)
+  phone          String?  @db.VarChar(30)
+  email          String?  @db.VarChar(150)
+  occupation     String?  @db.VarChar(120)
+  isPrimaryPayer Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([studentId])
+  @@map("guardians")
+}
+
+model FeeType {
+  id         Int         @id @default(autoincrement())
+  businessId Int         @default(1)
+  code       String      @db.VarChar(30)
+  name       String      @db.VarChar(120)
+  category   FeeCategory @default(MISCELLANEOUS)
+  accountId  Int
+  account    Account     @relation(fields: [accountId], references: [id])
+  // Tuition and school fees are VAT-exempt under Sec 109(H) NIRC; books and
+  // uniforms are sales of goods and stay VATable. The fee type carries the
+  // code, never the invoice, so a mixed assessment bills both correctly.
+  vatCode      VatCode  @default(EXEMPT)
+  isRefundable Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  structureLines  FeeStructureLine[]
+  assessmentLines AssessmentLine[]
+
+  @@unique([businessId, code])
+  @@index([businessId])
+  @@map("fee_types")
+}
+
+enum FeeCategory {
+  TUITION
+  MISCELLANEOUS
+  BOOKS
+  UNIFORM
+  OTHER
+}
+
+model FeeStructure {
+  id           Int        @id @default(autoincrement())
+  businessId   Int        @default(1)
+  schoolYearId Int
+  schoolYear   SchoolYear @relation(fields: [schoolYearId], references: [id])
+  gradeLevelId Int
+  gradeLevel   GradeLevel @relation(fields: [gradeLevelId], references: [id])
+  name         String     @db.VarChar(120)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  lines       FeeStructureLine[]
+  enrollments Enrollment[]
+
+  @@unique([schoolYearId, gradeLevelId])
+  @@index([businessId])
+  @@map("fee_structures")
+}
+
+model FeeStructureLine {
+  id             Int          @id @default(autoincrement())
+  feeStructureId Int
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+  feeTypeId      Int
+  feeType        FeeType      @relation(fields: [feeTypeId], references: [id])
+  amount         Decimal      @default(0) @db.Decimal(15, 2)
+  billingBasis   BillingBasis @default(ANNUAL)
+  sortOrder      Int          @default(0)
+
+  @@index([feeStructureId])
+  @@map("fee_structure_lines")
+}
+
+enum BillingBasis {
+  ANNUAL
+  ONE_TIME
+}
+
+model PaymentScheme {
+  id                Int      @id @default(autoincrement())
+  businessId        Int      @default(1)
+  code              String   @db.VarChar(30)
+  name              String   @db.VarChar(120)
+  installmentCount  Int      @default(10)
+  downPaymentAmount Decimal  @default(0) @db.Decimal(15, 2)
+  // Applied to the tuition portion only, mirroring how PH schools quote a
+  // "cash discount" for full payment at enrolment.
+  discountPct       Decimal  @default(0) @db.Decimal(5, 2)
+  surchargePct      Decimal  @default(0) @db.Decimal(5, 2)
+  isActive          Boolean  @default(true)
+  sortOrder         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  enrollments Enrollment[]
+
+  @@unique([businessId, code])
+  @@index([businessId])
+  @@map("payment_schemes")
+}
+
+model Enrollment {
+  id              Int              @id @default(autoincrement())
+  businessId      Int              @default(1)
+  studentId       Int
+  student         Student          @relation(fields: [studentId], references: [id])
+  schoolYearId    Int
+  schoolYear      SchoolYear       @relation(fields: [schoolYearId], references: [id])
+  gradeLevelId    Int
+  gradeLevel      GradeLevel       @relation(fields: [gradeLevelId], references: [id])
+  sectionId       Int?
+  section         Section?         @relation(fields: [sectionId], references: [id])
+  feeStructureId  Int
+  feeStructure    FeeStructure     @relation(fields: [feeStructureId], references: [id])
+  paymentSchemeId Int
+  paymentScheme   PaymentScheme    @relation(fields: [paymentSchemeId], references: [id])
+  enrollmentDate  DateTime         @db.Date
+  status          EnrollmentStatus @default(PRE_ENROLLED)
+  remarks         String?          @db.Text
+  createdBy       Int?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  assessment Assessment?
+  discounts  StudentDiscount[]
+  subsidies  StudentSubsidy[]
+
+  @@unique([studentId, schoolYearId])
+  @@index([businessId])
+  @@index([schoolYearId])
+  @@map("enrollments")
+}
+
+// PRE_ENROLLED → FOR_ASSESSMENT → ASSESSED → PARTIALLY_PAID → ENROLLED
+// A school decides for itself how much must be paid before ENROLLED is reached;
+// the module records where the student actually is, not where policy says.
+enum EnrollmentStatus {
+  PRE_ENROLLED
+  FOR_ASSESSMENT
+  ASSESSED
+  PARTIALLY_PAID
+  ENROLLED
+  CANCELLED
+  TRANSFERRED
+  COMPLETED
+}
+
+model Assessment {
+  id             Int              @id @default(autoincrement())
+  businessId     Int              @default(1)
+  assessmentNo   String           @unique @db.VarChar(30)
+  enrollmentId   Int              @unique
+  enrollment     Enrollment       @relation(fields: [enrollmentId], references: [id])
+  studentId      Int
+  student        Student          @relation(fields: [studentId], references: [id])
+  assessmentDate DateTime         @db.Date
+  grossAmount    Decimal          @default(0) @db.Decimal(15, 2)
+  discountAmount Decimal          @default(0) @db.Decimal(15, 2)
+  subsidyAmount  Decimal          @default(0) @db.Decimal(15, 2)
+  netAmount      Decimal          @default(0) @db.Decimal(15, 2)
+  billedAmount   Decimal          @default(0) @db.Decimal(15, 2)
+  paidAmount     Decimal          @default(0) @db.Decimal(15, 2)
+  status         AssessmentStatus @default(DRAFT)
+  notes          String?          @db.Text
+  createdBy      Int?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  lines        AssessmentLine[]
+  installments Installment[]
+  adjustments  BillingAdjustment[]
+
+  @@index([businessId])
+  @@index([studentId])
+  @@index([status])
+  @@map("assessments")
+}
+
+// DRAFT → POSTED → PARTIALLY_PAID → PAID, or VOIDED at any point.
+// POSTED is the moment the assessment stops being a working document: under
+// the defer-and-amortise policy it is also the moment the year hits the ledger.
+enum AssessmentStatus {
+  DRAFT
+  POSTED
+  PARTIALLY_PAID
+  PAID
+  VOIDED
+}
+
+model AssessmentLine {
+  id           Int        @id @default(autoincrement())
+  assessmentId Int
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  feeTypeId    Int
+  feeType      FeeType    @relation(fields: [feeTypeId], references: [id])
+  accountId    Int
+  description  String     @db.VarChar(255)
+  amount       Decimal    @default(0) @db.Decimal(15, 2)
+  vatCode      VatCode    @default(EXEMPT)
+  // ONE_TIME lines are billed whole on the enrolment invoice; ANNUAL lines are
+  // spread across the installment schedule.
+  billingBasis BillingBasis @default(ANNUAL)
+  sortOrder    Int          @default(0)
+
+  @@index([assessmentId])
+  @@map("assessment_lines")
+}
+
+model Installment {
+  id           Int               @id @default(autoincrement())
+  assessmentId Int
+  assessment   Assessment        @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  seq          Int
+  label        String            @db.VarChar(60)
+  dueDate      DateTime          @db.Date
+  amount       Decimal           @default(0) @db.Decimal(15, 2)
+  paidAmount   Decimal           @default(0) @db.Decimal(15, 2)
+  status       InstallmentStatus @default(SCHEDULED)
+  // Set by the billing run. The link into the existing AR pipeline — once set,
+  // this installment money lives on a real Invoice.
+  invoiceId    Int?              @unique
+  invoice      Invoice?          @relation(fields: [invoiceId], references: [id])
+  billedAt     DateTime?
+
+  @@unique([assessmentId, seq])
+  @@index([dueDate])
+  @@index([status])
+  @@map("installments")
+}
+
+enum InstallmentStatus {
+  SCHEDULED
+  BILLED
+  PARTIAL
+  PAID
+  CANCELLED
+}
+
+model StudentDiscount {
+  id           Int           @id @default(autoincrement())
+  enrollmentId Int
+  enrollment   Enrollment    @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  type         DiscountType  @default(SIBLING)
+  label        String        @db.VarChar(120)
+  basis        DiscountBasis @default(PCT)
+  value        Decimal       @default(0) @db.Decimal(15, 2)
+  amount       Decimal       @default(0) @db.Decimal(15, 2)
+  approvedBy   Int?
+  createdAt    DateTime      @default(now())
+
+  @@index([enrollmentId])
+  @@map("student_discounts")
+}
+
+enum DiscountType {
+  SIBLING
+  ACADEMIC
+  EMPLOYEE
+  EARLY_BIRD
+  FULL_PAYMENT
+  OTHER
+}
+
+enum DiscountBasis {
+  PCT
+  FIXED
+}
+
+model StudentSubsidy {
+  id             Int           @id @default(autoincrement())
+  enrollmentId   Int
+  enrollment     Enrollment    @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  type           SubsidyType   @default(ESC)
+  referenceNo    String?       @db.VarChar(60)
+  amount         Decimal       @default(0) @db.Decimal(15, 2)
+  receivedAmount Decimal       @default(0) @db.Decimal(15, 2)
+  status         SubsidyStatus @default(PENDING)
+  remarks        String?       @db.Text
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([enrollmentId])
+  @@index([status])
+  @@map("student_subsidies")
+}
+
+enum SubsidyType {
+  ESC
+  SHS_VOUCHER
+  LGU
+  PRIVATE_SPONSOR
+}
+
+enum SubsidyStatus {
+  PENDING
+  BILLED
+  RECEIVED
+}
+
+// Cash taken before the matching invoice exists (typically a full-year cash
+// payer). Parked in liability 2215 and drawn down as each invoice is issued,
+// so revenue is never recognised ahead of billing.
+model StudentAdvance {
+  id            Int      @id @default(autoincrement())
+  businessId    Int      @default(1)
+  studentId     Int
+  student       Student  @relation(fields: [studentId], references: [id])
+  receiptNo     String   @unique @db.VarChar(30)
+  paymentDate   DateTime @db.Date
+  amount        Decimal  @default(0) @db.Decimal(15, 2)
+  appliedAmount Decimal  @default(0) @db.Decimal(15, 2)
+  paymentMethod String   @db.VarChar(50)
+  reference     String?  @db.VarChar(100)
+  notes         String?  @db.Text
+  createdBy     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([businessId])
+  @@index([studentId])
+  @@map("student_advances")
+}
+
+// Records one month of deferred-tuition amortisation, so a period can never be
+// recognised twice. Only used under the ON_ASSESSMENT revenue policy — under
+// ON_BILLING revenue is recognised as each installment is billed and there is
+// nothing to amortise.
+model AmortizationRun {
+  id           Int      @id @default(autoincrement())
+  businessId   Int      @default(1)
+  schoolYearId Int
+  period       String   @db.VarChar(7)
+  amount       Decimal  @default(0) @db.Decimal(15, 2)
+  entryCount   Int      @default(0)
+  reference    String?  @db.VarChar(60)
+  runBy        Int?
+  runAt        DateTime @default(now())
+
+  @@unique([businessId, schoolYearId, period])
+  @@index([businessId])
+  @@map("amortization_runs")
+}
+
+// ═══════════════════════════════════════════════════════════
+// SCHOOL BILLING — LEDGER, ADJUSTMENTS, REFUNDS, SETTLEMENT
+// ═══════════════════════════════════════════════════════════
+
+/// The permanent financial history of one student.
+///
+/// Append-only. Every charge, discount, subsidy, payment, adjustment and refund
+/// lands here as a row with a running balance, so the account can be read as a
+/// statement rather than reassembled from invoices each time.
+///
+/// The derived view it replaces could only ever describe things that were
+/// invoices; an adjustment or a credit memo had nowhere to live. `balance` is
+/// the running total AFTER this row, computed inside the same transaction that
+/// writes it — see utils/studentLedger.js.
+model StudentLedger {
+  id           Int             @id @default(autoincrement())
+  businessId   Int             @default(1)
+  studentId    Int
+  student      Student         @relation(fields: [studentId], references: [id])
+  entryDate    DateTime        @db.Date
+  seq          Int             @default(0)
+  type         LedgerEntryType
+  reference    String?         @db.VarChar(60)
+  description  String          @db.VarChar(255)
+  debit        Decimal         @default(0) @db.Decimal(15, 2)
+  credit       Decimal         @default(0) @db.Decimal(15, 2)
+  balance      Decimal         @default(0) @db.Decimal(15, 2)
+  assessmentId Int?
+  invoiceId    Int?
+  entryNo      String?         @db.VarChar(30)
+  createdBy    Int?
+  createdAt    DateTime        @default(now())
+
+  @@index([businessId])
+  @@unique([studentId, seq])
+  @@index([entryDate])
+  @@index([type])
+  @@map("student_ledgers")
+}
+
+enum LedgerEntryType {
+  ASSESSMENT
+  CHARGE
+  DISCOUNT
+  SCHOLARSHIP
+  SUBSIDY
+  PAYMENT
+  ADVANCE
+  ADVANCE_APPLIED
+  ADJUSTMENT
+  CREDIT_MEMO
+  REFUND
+  REVERSAL
+}
+
+/// A correction to what a student owes, after the assessment was issued.
+///
+/// DEBIT raises the balance (a fee that was missed, a late penalty).
+/// CREDIT lowers it (a fee charged in error, a credit memo).
+///
+/// Voiding and re-issuing an assessment would lose the reason it was wrong;
+/// an adjustment keeps the original figure and records the correction beside it.
+model BillingAdjustment {
+  id           Int              @id @default(autoincrement())
+  businessId   Int              @default(1)
+  adjustmentNo String           @unique @db.VarChar(30)
+  studentId    Int
+  student      Student          @relation(fields: [studentId], references: [id])
+  assessmentId Int?
+  assessment   Assessment?      @relation(fields: [assessmentId], references: [id])
+  adjustmentDate DateTime       @db.Date
+  direction    AdjustmentDirection
+  category     AdjustmentCategory @default(CORRECTION)
+  accountId    Int
+  account      Account          @relation(fields: [accountId], references: [id])
+  amount       Decimal          @default(0) @db.Decimal(15, 2)
+  vatCode      VatCode          @default(EXEMPT)
+  reason       String           @db.Text
+  status       AdjustmentStatus @default(DRAFT)
+  approvedBy   Int?
+  createdBy    Int?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([businessId])
+  @@index([studentId])
+  @@index([status])
+  @@map("billing_adjustments")
+}
+
+enum AdjustmentDirection {
+  DEBIT
+  CREDIT
+}
+
+enum AdjustmentCategory {
+  CORRECTION
+  PENALTY
+  CREDIT_MEMO
+  WRITE_OFF
+  OTHER
+}
+
+enum AdjustmentStatus {
+  DRAFT
+  POSTED
+  VOIDED
+}
+
+/// Money going back to a parent.
+///
+/// Drawn from the student's unapplied advance — cash the school holds but has
+/// not earned. Refunding beyond that would be returning money that is already
+/// settling a real receivable, so the controller caps it.
+model Refund {
+  id           Int          @id @default(autoincrement())
+  businessId   Int          @default(1)
+  refundNo     String       @unique @db.VarChar(30)
+  studentId    Int
+  student      Student      @relation(fields: [studentId], references: [id])
+  refundDate   DateTime     @db.Date
+  amount       Decimal      @default(0) @db.Decimal(15, 2)
+  method       String       @db.VarChar(50)
+  reference    String?      @db.VarChar(100)
+  reason       String       @db.Text
+  status       RefundStatus @default(DRAFT)
+  approvedBy   Int?
+  createdBy    Int?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([businessId])
+  @@index([studentId])
+  @@index([status])
+  @@map("refunds")
+}
+
+enum RefundStatus {
+  DRAFT
+  APPROVED
+  PAID
+  VOIDED
+}
+
+/// A gateway payout landing in the bank.
+///
+/// A GCash payment taken at the window is cash the school does not have yet —
+/// it arrives days later, net of the gateway's fee. Recording the collection
+/// against a clearing account and settling it here keeps the bank balance
+/// honest in between, and gives bank reconciliation something to match.
+///
+/// Settlement is capped at the live clearing-account balance rather than
+/// tracked per payment: the ledger is the source of truth for what is still
+/// outstanding, and gateways pay out in batches, not per transaction.
+model PaymentSettlement {
+  id             Int      @id @default(autoincrement())
+  businessId     Int      @default(1)
+  settlementNo   String   @unique @db.VarChar(30)
+  settlementDate DateTime @db.Date
+  method         String   @db.VarChar(50)
+  grossAmount    Decimal  @default(0) @db.Decimal(15, 2)
+  feeAmount      Decimal  @default(0) @db.Decimal(15, 2)
+  netAmount      Decimal  @default(0) @db.Decimal(15, 2)
+  bankAccountId  Int
+  bankAccount    Account  @relation(fields: [bankAccountId], references: [id])
+  reference      String?  @db.VarChar(100)
+  notes          String?  @db.Text
+  createdBy      Int?
+  createdAt      DateTime @default(now())
+
+  @@index([businessId])
+  @@index([settlementDate])
+  @@map("payment_settlements")
+}
+
+// ─── Add-business payment orders ───────────────────────────
+enum OrderPeriod {
+  MONTHLY
+  YEARLY
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PROOF_SUBMITTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model PlanPrice {
+  id          Int         @id @default(autoincrement())
+  companyType String      @db.VarChar(20)
+  period      OrderPeriod
+  amount      Decimal     @db.Decimal(12, 2)
+  isActive    Boolean     @default(true)
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([companyType, period])
+  @@map("plan_prices")
+}
+
+// Single row (id = 1): what the user is told when paying.
+model PaymentInstruction {
+  id         Int      @id @default(1)
+  text       String   @db.Text
+  qrFileName String?  @db.VarChar(255)
+  qrMimeType String?  @db.VarChar(100)
+  updatedAt  DateTime @updatedAt
+
+  @@map("payment_instructions")
+}
+
+model BusinessOrder {
+  id          Int         @id @default(autoincrement())
+  orderNo     String      @unique @db.VarChar(20)
+  userId      Int
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // What to create on approval
+  companyName    String    @db.VarChar(150)
+  tin            String?   @db.VarChar(30)
+  address        String?   @db.Text
+  phone          String?   @db.VarChar(30)
+  companyType    String    @db.VarChar(20)
+  taxType        String    @db.VarChar(20)
+  booksStartDate DateTime? @db.Date
+
+  period      OrderPeriod
+  amount      Decimal     @db.Decimal(12, 2)   // price snapshot
+  status      OrderStatus @default(PENDING_PAYMENT)
+
+  referenceNo       String?  @db.VarChar(100)
+  proofFileName     String?  @db.VarChar(255)
+  proofOriginalName String?  @db.VarChar(255)
+  proofMimeType     String?  @db.VarChar(100)
+
+  reviewNote   String?   @db.VarChar(500)
+  reviewedById Int?
+  reviewedAt   DateTime?
+  businessId   Int?      // set once approved
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("business_orders")
 }

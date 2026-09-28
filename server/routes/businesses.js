@@ -4,9 +4,13 @@ const ctrl = require('../controllers/businessController');
 
 const adminOnly = authorize('ADMIN');
 
+// These two work before the user has a business, so they run without
+// resolveBusiness (which rejects a user that has none).
+router.get('/',            authenticate,     ctrl.list);
+router.post('/onboard',    authenticate,     ctrl.onboard);
+
 router.use(authenticate, resolveBusiness);
 
-router.get('/',                              ctrl.list);
 router.post('/reset-demo', adminOnly,        ctrl.resetDemo);
 router.get('/:id',                           ctrl.get);
 router.post('/',           adminOnly,        ctrl.create);

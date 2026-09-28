@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "concurrently -k -n api,web \"cross-env PORT=5000 nodemon server/index.js\" \"next dev\"",
     "build": "next build",
+    "build:prod": "cross-env NEXT_BUILD_DIR=.next-prod next build",
     "start": "concurrently -k -n api,web \"cross-env PORT=5000 node server/index.js\" \"next start\"",
+    "prod": "concurrently -k -n api,web \"cross-env NODE_ENV=production PORT=5004 node server/index.js\" \"cross-env NEXT_BUILD_DIR=.next-prod NEXT_PUBLIC_API_URL=http://localhost:5004 next start -p 3004\"",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",

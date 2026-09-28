@@ -7,10 +7,11 @@ import {
   Package, Landmark, Wallet,
   ShoppingCart, Banknote, BarChart3, Repeat,
   PanelLeftClose, PanelLeftOpen, HandCoins, Scale,
+  GraduationCap, Blocks, Tags, ClipboardCheck,
 } from 'lucide-react';
 import PesoReceipt from '@/components/icons/PesoReceipt';
 import { clearSession, getUser } from '@/lib/auth';
-import { canAccess } from '@/lib/permissions';
+import { canAccess, isNavVisible } from '@/lib/permissions';
 import { useRouter } from 'next/navigation';
 import { auth as authApi } from '@/lib/api';
 import toast from 'react-hot-toast';
@@ -45,6 +46,25 @@ const NAV = [
         ],
       },
       { label: 'Cash Sales', icon: Banknote, href: '/receivable/cash-sales' },
+    ],
+  },
+  {
+    section: 'School',
+    items: [
+      {
+        label: 'School Billing', icon: GraduationCap,
+        children: [
+          { label: 'Cashier',      href: '/school/collections' },
+          { label: 'Students',     href: '/school/students' },
+          { label: 'Enrollment',   href: '/school/enrollment' },
+          { label: 'Assessments',  href: '/school/assessments' },
+          { label: 'Billing Run',  href: '/school/billing' },
+          { label: 'Revenue Recognition', href: '/school/amortization' },
+          { label: 'Subsidies',    href: '/school/subsidies' },
+          { label: 'Reports',      href: '/school/reports' },
+          { label: 'Setup',        href: '/school/setup' },
+        ],
+      },
     ],
   },
   {
@@ -205,7 +225,15 @@ export default function Sidebar({ collapsed = false, onToggle, mobileOpen = fals
   const router = useRouter();
   // Read user from localStorage only after mount so the first client render
   // matches the server (which has no localStorage) — avoids hydration mismatch.
+  const pathname = usePathname();
   const [user, setUser] = useState(null);
+  const [, bumpModules] = useState(0);
+  // Re-render when the Modules page (or the layout's initial load) changes the list.
+  useEffect(() => {
+    const h = () => bumpModules((n) => n + 1);
+    window.addEventListener('finara:modules-changed', h);
+    return () => window.removeEventListener('finara:modules-changed', h);
+  }, []);
   useEffect(() => { setUser(getUser()); }, []);
 
   const handleLogout = async () => {
@@ -244,7 +272,7 @@ export default function Sidebar({ collapsed = false, onToggle, mobileOpen = fals
       <nav className="flex-1 p-3 overflow-y-auto">
         {NAV.map((group, gi) => {
           const items = group.items.filter((item) =>
-            !user || canAccess(item.href || item.children?.[0]?.href, user.role));
+            !user || isNavVisible(item.href || item.children?.[0]?.href, user.role));
           if (items.length === 0) return null;
           return (
             <div key={group.section || `g${gi}`} className="mb-1">
@@ -267,17 +295,29 @@ export default function Sidebar({ collapsed = false, onToggle, mobileOpen = fals
       <div className="border-t border-gray-200 p-3 space-y-1 dark:border-gray-800">
         {collapsed ? (
           <div className="flex flex-col items-center gap-1">
+            <Link href="/my-businesses" title="My Businesses" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Building2 className="w-5 h-5" /></Link>
             {(!user || canAccess('/settings', user.role)) && (
               <>
                 <Link href="/settings" title="Settings" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Settings className="w-5 h-5" /></Link>
                 <Link href="/settings/businesses" title="Businesses" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Building2 className="w-5 h-5" /></Link>
                 <Link href="/settings/opening-balances" title="Opening Balances" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Scale className="w-5 h-5" /></Link>
+                {user?.role === 'SUPER_ADMIN' && (
+                  <>
+                    <Link href="/modules" title="Modules" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Blocks className="w-5 h-5" /></Link>
+                    <Link href="/admin/plans" title="Plans & Payment" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><Tags className="w-5 h-5" /></Link>
+                    <Link href="/admin/orders" title="Business Orders" className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"><ClipboardCheck className="w-5 h-5" /></Link>
+                  </>
+                )}
               </>
             )}
             <button onClick={handleLogout} title={`Logout (${user?.email || ''})`} className="flex items-center justify-center h-10 w-10 rounded-lg text-gray-400 hover:text-red-500 hover:bg-gray-100 dark:hover:bg-gray-800"><LogOut className="w-5 h-5" /></button>
           </div>
         ) : (
           <>
+            <Link href="/my-businesses" className={pathname === '/my-businesses' ? 'sidebar-link-active' : 'sidebar-link-inactive'}>
+              <Building2 className="w-4 h-4" />
+              My Businesses
+            </Link>
             {(!user || canAccess('/settings', user.role)) && (
               <>
                 <Link href="/settings" className="sidebar-link-inactive">
@@ -292,6 +332,22 @@ export default function Sidebar({ collapsed = false, onToggle, mobileOpen = fals
                   <Scale className="w-4 h-4" />
                   Opening Balances
                 </Link>
+                {user?.role === 'SUPER_ADMIN' && (
+                  <>
+                    <Link href="/modules" className={pathname === '/modules' ? 'sidebar-link-active' : 'sidebar-link-inactive'}>
+                      <Blocks className="w-4 h-4" />
+                      Modules
+                    </Link>
+                    <Link href="/admin/plans" className={pathname === '/admin/plans' ? 'sidebar-link-active' : 'sidebar-link-inactive'}>
+                      <Tags className="w-4 h-4" />
+                      Plans &amp; Payment
+                    </Link>
+                    <Link href="/admin/orders" className={pathname === '/admin/orders' ? 'sidebar-link-active' : 'sidebar-link-inactive'}>
+                      <ClipboardCheck className="w-4 h-4" />
+                      Business Orders
+                    </Link>
+                  </>
+                )}
               </>
             )}
             <div className="flex items-center gap-3 px-3 py-2">

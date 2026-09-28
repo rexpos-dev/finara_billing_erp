@@ -38,7 +38,10 @@ const resolveBusiness = async (req, res, next) => {
         where: { userId: req.user.id },
         orderBy: { businessId: 'asc' },
       });
-      req.businessId = ub?.businessId || 1;
+      // No business yet (e.g. a fresh self-signup): never fall back to another
+      // tenant's data. The client sends these users to /onboarding.
+      if (!ub) return res.status(403).json({ error: 'Create your company to get started', code: 'NO_BUSINESS' });
+      req.businessId = ub.businessId;
       return next();
     }
 

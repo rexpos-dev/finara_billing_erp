@@ -49,7 +49,7 @@ export default function DashboardLayout({ children }) {
   useEffect(() => {
     if (!authed) return;
     permApi.getDisabled()
-      .then(({ data }) => setDisabledModules(data))
+      .then(({ data }) => setDisabledModules(data.disabled, data.adminExempt))
       .catch(() => setDisabledModules([]));
   }, [authed]);
 

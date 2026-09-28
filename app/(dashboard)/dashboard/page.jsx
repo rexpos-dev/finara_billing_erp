@@ -2,13 +2,14 @@
 import { useEffect, useState } from 'react';
 import { dashboard as dashApi } from '@/lib/api';
 import { formatCurrency } from '@/lib/auth';
+import Link from 'next/link';
 import toast from 'react-hot-toast';
 import {
   TrendingUp, TrendingDown, AlertCircle, Users, Building2,
-  ShoppingCart, FileText, CheckCircle, Clock,
+  ShoppingCart, FileText, CheckCircle, Clock, Circle, CheckCircle2,
 } from 'lucide-react';
 import PesoSign from '@/components/icons/PesoSign';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 const StatCard = ({ label, value, sub, icon: Icon, color, trend }) => (
   <div className="stat-card">
@@ -73,6 +74,31 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Getting started — hidden once every step is done */}
+      {d.setup && d.setup.completed < d.setup.total && (
+        <div className="card">
+          <div className="card-header">
+            <h3 className="font-semibold text-gray-900">Getting Started</h3>
+            <span className="badge-blue">{d.setup.completed} of {d.setup.total} done</span>
+          </div>
+          <div className="px-5 pt-4">
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full bg-blue-600 transition-all" style={{ width: `${(d.setup.completed / d.setup.total) * 100}%` }} />
+            </div>
+          </div>
+          <div className="divide-y divide-gray-100 mt-2">
+            {d.setup.steps.map((s) => (
+              <Link key={s.key} href={s.href} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50">
+                {s.done
+                  ? <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
+                  : <Circle className="w-5 h-5 text-gray-300 flex-shrink-0" />}
+                <span className={`text-sm ${s.done ? 'text-gray-400 line-through' : 'text-gray-900 font-medium'}`}>{s.label}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard
@@ -123,7 +149,7 @@ export default function DashboardPage() {
                 <Tooltip formatter={(v) => formatCurrency(v)} />
                 <Bar dataKey="amount" radius={[6, 6, 0, 0]}>
                   {chartData.map((entry, i) => (
-                    <rect key={i} fill={entry.fill} />
+                    <Cell key={i} fill={entry.fill} />
                   ))}
                 </Bar>
               </BarChart>

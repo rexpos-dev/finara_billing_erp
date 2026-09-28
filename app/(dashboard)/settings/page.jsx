@@ -1,14 +1,14 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { settings as settingsApi, auth as authApi, permissions as permApi, backup as backupApi, leads as leadsApi } from '@/lib/api';
-import { MODULES, CONFIGURABLE_ROLES, isLocked, setPermissions, setDisabledModules } from '@/lib/permissions';
+import { MODULES, CONFIGURABLE_ROLES, isLocked, setPermissions } from '@/lib/permissions';
 import toast from 'react-hot-toast';
 import {
   Building2, FileText, Users, Database, Settings as SettingsIcon,
   Calculator, Hash, Shield, Save, RefreshCw, Download, AlertTriangle,
   CheckCircle, Eye, EyeOff, Trash2, Plus, Edit2, Key, ToggleLeft,
   ToggleRight, Server, HardDrive, Clock, Globe, Loader2, X, ChevronDown,
-  Inbox, HelpCircle, Blocks, Mail,
+  Inbox, HelpCircle, Mail,
 } from 'lucide-react';
 import { formatCurrency, formatDate, getUser } from '@/lib/auth';
 import { clearCompanyCache } from '@/lib/print';
@@ -28,7 +28,6 @@ const TABS = [
   { key: 'audit',       label: 'Audit Trail',  icon: Shield,       roles: ['ADMIN', 'MANAGER'] },
   { key: 'inquiries',   label: 'Inquiries',    icon: Inbox,        roles: ['ADMIN', 'MANAGER'] },
   { key: 'help',        label: 'Help',         icon: HelpCircle,   roles: ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'VIEWER'] },
-  { key: 'modules',     label: 'Modules',      icon: Blocks,       roles: ['SUPER_ADMIN'] },
 ];
 
 const USER_MANUAL_PDF = '/Finara-User-Manual.pdf';
@@ -336,8 +335,6 @@ export default function SettingsPage() {
   const [backingUp, setBackingUp] = useState(false);
   const [permConfig, setPermConfig] = useState(null); // { MANAGER:[], ACCOUNTANT:[], VIEWER:[] }
   const [permSaving, setPermSaving] = useState(false);
-  const [disabledMods,        setDisabledMods]        = useState(null); // string[] of module keys, SUPER_ADMIN only
-  const [disabledModsSaving,  setDisabledModsSaving]   = useState(false);
   const [inquiries,        setInquiries]        = useState([]);
   const [inquiriesLoading, setInquiriesLoading] = useState(false);
   const [expandedInquiry,  setExpandedInquiry]  = useState(null); // lead id whose full message is shown
@@ -469,21 +466,12 @@ export default function SettingsPage() {
     } catch { toast.error('Failed to load permissions'); }
   }, []);
 
-  // Load globally disabled modules (SUPER_ADMIN only)
-  const loadDisabledMods = useCallback(async () => {
-    try {
-      const r = await permApi.getDisabled();
-      setDisabledMods(r.data);
-    } catch { toast.error('Failed to load module settings'); }
-  }, []);
-
   useEffect(() => { loadSettings(); }, [loadSettings]);
   useEffect(() => {
     if (activeTab === 'users')       loadUsers();
     if (activeTab === 'database')    { loadDbStats(); loadModuleList(); }
     if (activeTab === 'permissions') loadPermissions();
     if (activeTab === 'inquiries')   loadInquiries();
-    if (activeTab === 'modules')     loadDisabledMods();
   }, [activeTab]);
 
   const togglePerm = (role, moduleKey) => {
@@ -505,24 +493,6 @@ export default function SettingsPage() {
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to save permissions');
     } finally { setPermSaving(false); }
-  };
-
-  const toggleDisabledMod = (moduleKey) => {
-    setDisabledMods((list) =>
-      list.includes(moduleKey) ? list.filter((k) => k !== moduleKey) : [...list, moduleKey]
-    );
-  };
-
-  const handleSaveDisabledMods = async () => {
-    setDisabledModsSaving(true);
-    try {
-      const r = await permApi.saveDisabled({ disabled: disabledMods });
-      setDisabledMods(r.data.disabled);
-      setDisabledModules(r.data.disabled); // apply live so nav/guard update without reload
-      toast.success('Module settings saved');
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to save module settings');
-    } finally { setDisabledModsSaving(false); }
   };
 
   const handleSave = async () => {
@@ -1375,40 +1345,6 @@ export default function SettingsPage() {
                     </p>
                     <button onClick={handleSavePermissions} disabled={permSaving} className="btn-primary">
                       {permSaving ? 'Saving…' : 'Save Permissions'}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'modules' && (
-            <div className="space-y-5">
-              <SectionTitle icon={Blocks} color="text-violet-600">Modules</SectionTitle>
-              <p className="text-sm text-gray-500">
-                Turn a module off to hide it from the sidebar and block direct navigation to it,
-                for every role — including Admin. Nothing is deleted; data and routes stay intact,
-                and turning it back on restores full access immediately. Dashboard and Settings
-                can't be turned off, so this screen always stays reachable.
-              </p>
-
-              {!disabledMods ? (
-                <div className="py-10 text-center text-gray-400 text-sm">Loading module settings…</div>
-              ) : (
-                <>
-                  <div className="divide-y divide-gray-100 border border-gray-200 rounded-xl px-4">
-                    {MODULES.filter((m) => !m.noDisable).map((m) => (
-                      <Toggle
-                        key={m.key}
-                        label={m.label}
-                        value={!disabledMods.includes(m.key)}
-                        onChange={() => toggleDisabledMod(m.key)}
-                      />
-                    ))}
-                  </div>
-                  <div className="flex justify-end">
-                    <button onClick={handleSaveDisabledMods} disabled={disabledModsSaving} className="btn-primary">
-                      {disabledModsSaving ? 'Saving…' : 'Save Module Settings'}
                     </button>
                   </div>
                 </>

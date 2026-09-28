@@ -69,6 +69,32 @@ exports.login = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// Public self-signup. The role is fixed server-side — never taken from the
+// request — and the account starts with no business, so it can see no data
+// until it creates its own company (see businessController.onboard).
+exports.register = async (req, res, next) => {
+  try {
+    if (process.env.ALLOW_SIGNUP === 'false') throw createError('Sign-up is disabled', 403);
+    const { email, password, firstName, lastName } = req.body;
+
+    const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+    if (existing) throw createError('An account with this email already exists', 409);
+
+    const hashed = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({
+      data: { email, password: hashed, firstName, lastName, role: 'MANAGER', lastLoginAt: new Date() },
+    });
+    await recordAudit({ req, action: 'REGISTER', entity: 'User', entityId: user.id, user: { id: user.id, email: user.email }, summary: `Self-registered ${user.email}` });
+
+    const tokens = signTokens(user);
+    res.status(201).json({
+      user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role },
+      accessToken: tokens.access,
+      refreshToken: tokens.refresh,
+    });
+  } catch (err) { next(err); }
+};
+
 exports.refreshToken = async (req, res, next) => {
   try {
     const { refreshToken } = req.body;

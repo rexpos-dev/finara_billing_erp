@@ -38,3 +38,4 @@ git-error-*
 
 # Subagent-driven-development scratch (progress ledger, task briefs/reports)
 .superpowers/
+.next-prod/

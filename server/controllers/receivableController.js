@@ -4,14 +4,30 @@ const { computeVAT } = require('../utils/phCompliance');
 const glPost = require('../utils/glPost');
 const logger = require('../utils/logger');
 const { recordAudit } = require('../utils/audit');
+const { nextDocNumber } = require('../utils/docNumber');
 
+// Derive the next number from the LAST ISSUED number, never from a row count.
+// A count is wrong the moment a row is deleted: with 5 invoices created and one
+// deleted, count()+1 yields INV-000005, which already exists, and the unique
+// constraint then rejects every subsequent create forever. See utils/docNumber.js.
+//
+// The startsWith filter keeps this series separate from the school billing
+// series (SI-<businessId>-nnnnnn), which numbers itself independently.
 const genInvNo = async () => {
-  const count = await prisma.invoice.count();
-  return `INV-${String(count + 1).padStart(6, '0')}`;
+  const last = await prisma.invoice.findFirst({
+    where:   { invoiceNo: { startsWith: 'INV-' } },
+    orderBy: { invoiceNo: 'desc' },
+    select:  { invoiceNo: true },
+  });
+  return nextDocNumber('INV-', last?.invoiceNo, 6);
 };
 const genPayNo = async () => {
-  const count = await prisma.paymentAR.count();
-  return `PAR-${String(count + 1).padStart(6, '0')}`;
+  const last = await prisma.paymentAR.findFirst({
+    where:   { paymentNo: { startsWith: 'PAR-' } },
+    orderBy: { paymentNo: 'desc' },
+    select:  { paymentNo: true },
+  });
+  return nextDocNumber('PAR-', last?.paymentNo, 6);
 };
 
 // Shared by createInvoice/updateInvoice: recompute per-line VAT + running totals.

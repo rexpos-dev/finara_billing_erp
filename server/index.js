@@ -144,6 +144,8 @@ app.use('/api/cash-requests', routes.cashRequests);
 app.use('/api/cash-sales',     routes.cashSales);
 app.use('/api/opening-balances', routes.openingBalances);
 app.use('/api/reports',          routes.cashPosition);
+app.use('/api/school',           routes.school);
+app.use('/api/orders',           routes.orders);
 
 // ─── 404 ───────────────────────────────────────────────────
 app.use((req, res) => {

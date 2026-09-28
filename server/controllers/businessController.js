@@ -3,6 +3,8 @@ const { createError } = require('../middleware/errorHandler');
 const { clearBusinessCache } = require('../utils/glPost');
 const { cloneChartOfAccounts } = require('../utils/cloneChartOfAccounts');
 const { resetDemoBusiness } = require('../../prisma/seedDemo');
+const { COMPANY_TYPES, TAX_TYPES } = require('../utils/companyTypes');
+const { provisionByType, rollbackBusiness, createProvisionedBusiness } = require('../utils/provisionBusiness');
 
 // ─── List all businesses the current user can access ─────────────
 exports.list = async (req, res, next) => {
@@ -46,29 +48,63 @@ exports.get = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ─── Create ──────────────────────────────────────────────────────
+// ─── Shared by create() and onboard(): see ../utils/provisionBusiness ───
+// ─── Create (ADMIN) ──────────────────────────────────────────────
+// companyType is optional here for backwards compatibility: without it the
+// business is created as before (cloned COA, no type-specific setup).
 exports.create = async (req, res, next) => {
   try {
-    const { code, name, tin, address, phone, email, industry, booksStartDate } = req.body;
+    const { code, name, tin, address, phone, email, companyType, taxType, booksStartDate } = req.body;
     if (!code || !name) throw createError('code and name are required', 400);
+    if (companyType && !COMPANY_TYPES[companyType]) throw createError('Invalid company type', 400);
+    if (taxType && !TAX_TYPES.includes(taxType)) throw createError('Invalid tax type', 400);
 
     const biz = await prisma.business.create({
       data: {
-        code: code.toUpperCase(), name, tin, address, phone, email, industry,
+        code: code.toUpperCase(), name, tin, address, phone, email,
+        industry: companyType ? COMPANY_TYPES[companyType].label : req.body.industry,
+        taxType: taxType || null,
         booksStartDate: booksStartDate ? new Date(booksStartDate) : null,
       },
     });
 
-    // Auto-clone the default COA from business 1 into the new business
-    await cloneChartOfAccounts(1, biz.id);
+    try {
+      // Auto-clone the default COA from business 1 into the new business
+      await cloneChartOfAccounts(1, biz.id);
+      if (companyType) await provisionByType(biz.id, companyType);
 
-    // Grant all ADMIN users access to the new business
-    const admins = await prisma.user.findMany({ where: { role: 'ADMIN' } });
-    await prisma.userBusiness.createMany({
-      data: admins.map((u) => ({ userId: u.id, businessId: biz.id })),
-      skipDuplicates: true,
+      // Grant all ADMIN users access to the new business
+      const admins = await prisma.user.findMany({ where: { role: 'ADMIN' } });
+      await prisma.userBusiness.createMany({
+        data: admins.map((u) => ({ userId: u.id, businessId: biz.id })),
+        skipDuplicates: true,
+      });
+    } catch (err) {
+      await rollbackBusiness(biz.id);
+      throw err;
+    }
+
+    res.status(201).json(biz);
+  } catch (err) { next(err); }
+};
+
+// ─── Self-service company creation (first business for a new account) ───
+// Only for a user who has no business yet. Creates the company, clones the
+// default COA, and grants ONLY this user access — the company is theirs alone.
+exports.onboard = async (req, res, next) => {
+  try {
+    const { name, tin, address, phone, companyType, taxType, booksStartDate } = req.body;
+    if (!name || !String(name).trim()) throw createError('Company name is required', 400);
+    if (!COMPANY_TYPES[companyType]) throw createError('Choose a company type', 400);
+    if (!TAX_TYPES.includes(taxType)) throw createError('Choose a tax type (VAT or Non-VAT)', 400);
+
+    const already = await prisma.userBusiness.findFirst({ where: { userId: req.user.id }, select: { id: true } });
+    if (already) throw createError('You already have a company', 409);
+
+    const biz = await createProvisionedBusiness({
+      name, tin, address, phone, email: req.user.email,
+      companyType, taxType, booksStartDate, ownerUserId: req.user.id,
     });
-
     res.status(201).json(biz);
   } catch (err) { next(err); }
 };
@@ -77,12 +113,17 @@ exports.create = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const { name, tin, address, phone, email, industry, isActive, booksStartDate } = req.body;
+    const { name, tin, address, phone, email, industry, isActive, taxType, booksStartDate } = req.body;
+    if (taxType && !TAX_TYPES.includes(taxType)) throw createError('Invalid tax type', 400);
     const biz = await prisma.business.update({
       where: { id },
       data: {
         name, tin, address, phone, email, industry, isActive,
-        booksStartDate: booksStartDate ? new Date(booksStartDate) : null,
+        // '' clears it; undefined (field not sent) leaves it alone.
+        taxType: taxType === '' ? null : taxType,
+        // Only touch the cutover date when the client actually sent it, so a
+        // partial PUT can't silently wipe it. '' / null clears it on purpose.
+        ...(booksStartDate !== undefined && { booksStartDate: booksStartDate ? new Date(booksStartDate) : null }),
       },
     });
 

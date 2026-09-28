@@ -33,4 +33,6 @@ module.exports = {
   cashSales:     require('./cashSales'),
   openingBalances: require('./openingBalances'),
   cashPosition:  require('./cashPosition'),
+  school:        require('./school'),
+  orders:        require('./orders'),
 };

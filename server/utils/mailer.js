@@ -144,6 +144,63 @@ async function sendInvoiceEmail(invoice, customer, settings = {}) {
   return sendMail({ to: customer.email, subject, html });
 }
 
+/**
+ * Email a student's assessment (fee breakdown + payment schedule) to a
+ * recipient — the primary-payer guardian's email, or the student's own if no
+ * guardian has one on file. See assessmentController.emailAssessment.
+ */
+async function sendAssessmentEmail(assessment, recipient, settings = {}) {
+  if (!recipient?.email) return false;
+
+  const feeRows = (assessment.lines || []).map((l) =>
+    `<tr><td style="padding:4px 8px;border-bottom:1px solid #eee">${escapeHtml(l.description || '')}</td>
+     <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:right">${peso(l.amount)}</td></tr>`).join('');
+
+  const statusColor = { PAID: '#15803d', PARTIAL: '#b45309', BILLED: '#1d4ed8', SCHEDULED: '#6b7280', CANCELLED: '#9ca3af' };
+  const schedRows = (assessment.installments || []).map((i) =>
+    `<tr><td style="padding:4px 8px;border-bottom:1px solid #eee">${escapeHtml(i.label || '')}</td>
+     <td style="padding:4px 8px;border-bottom:1px solid #eee">${dateStr(i.dueDate)}</td>
+     <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:right">${peso(i.amount)}</td>
+     <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:right">${peso(i.paidAmount)}</td>
+     <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:center;color:${statusColor[i.status] || '#6b7280'};font-weight:600">${escapeHtml(i.status || '')}</td></tr>`).join('');
+
+  const totalPayable = Number(assessment.netAmount) - Number(assessment.subsidyAmount);
+  const companyName = settings.companyName || 'Finara ERP';
+
+  const html = wrap(`Assessment ${assessment.assessmentNo}`,
+    `<p>Dear ${escapeHtml(recipient.name || 'Parent/Guardian')},</p>
+     <p>Please find the assessment of fees for <strong>${escapeHtml(assessment.studentLabel || '')}</strong> below.</p>
+     <table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0">
+       <thead><tr><th style="text-align:left;padding:4px 8px;border-bottom:2px solid #ddd">Fee</th><th style="text-align:right;padding:4px 8px;border-bottom:2px solid #ddd">Amount</th></tr></thead>
+       <tbody>${feeRows}</tbody>
+       <tfoot>
+         <tr><td style="padding:6px 8px;text-align:right">Gross assessment</td><td style="padding:6px 8px;text-align:right">${peso(assessment.grossAmount)}</td></tr>
+         ${Number(assessment.discountAmount) > 0 ? `<tr><td style="padding:6px 8px;text-align:right">Less: discounts</td><td style="padding:6px 8px;text-align:right">(${peso(assessment.discountAmount)})</td></tr>` : ''}
+         ${Number(assessment.subsidyAmount) > 0 ? `<tr><td style="padding:6px 8px;text-align:right">Less: DepEd subsidy</td><td style="padding:6px 8px;text-align:right">(${peso(assessment.subsidyAmount)})</td></tr>` : ''}
+         <tr><td style="padding:6px 8px;text-align:right;font-weight:700">Total payable</td><td style="padding:6px 8px;text-align:right;font-weight:700">${peso(totalPayable)}</td></tr>
+       </tfoot>
+     </table>
+     <h3 style="font-size:14px;margin:16px 0 8px">Payment Schedule</h3>
+     <table style="width:100%;border-collapse:collapse;font-size:13px">
+       <thead><tr>
+         <th style="text-align:left;padding:4px 8px;border-bottom:2px solid #ddd">Installment</th>
+         <th style="text-align:left;padding:4px 8px;border-bottom:2px solid #ddd">Due</th>
+         <th style="text-align:right;padding:4px 8px;border-bottom:2px solid #ddd">Amount</th>
+         <th style="text-align:right;padding:4px 8px;border-bottom:2px solid #ddd">Paid</th>
+         <th style="text-align:center;padding:4px 8px;border-bottom:2px solid #ddd">Status</th>
+       </tr></thead>
+       <tbody>${schedRows}</tbody>
+     </table>
+     <p style="font-size:12px;color:#6b7280">Tuition and school fees are VAT-exempt under Sec. 109(H) of the National Internal Revenue Code.
+     Books, modules and uniforms are sales of goods and are subject to VAT.</p>`);
+
+  return sendMail({
+    to: recipient.email,
+    subject: `Assessment ${assessment.assessmentNo} — ${companyName}`,
+    html,
+  });
+}
+
 async function sendOverdueReminder(invoice, customer) {
   if (!customer?.email) return false;
   const balance = Number(invoice.totalAmount) - Number(invoice.paidAmount || 0);
@@ -170,6 +227,6 @@ async function sendPayslipEmail(employee, period, item) {
 }
 
 module.exports = {
-  sendMail, sendPasswordReset, sendInvoiceEmail, sendOverdueReminder, sendPayslipEmail,
+  sendMail, sendPasswordReset, sendInvoiceEmail, sendAssessmentEmail, sendOverdueReminder, sendPayslipEmail,
   wrap, getTransporter, APP_URL, fillTemplate,
 };

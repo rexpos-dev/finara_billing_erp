@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Plus, Pencil, Users, Check, X, Building2, Trash2, RotateCcw, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { businesses as bizApi, settings as settingsApi } from '@/lib/api';
@@ -32,13 +33,14 @@ export default function BusinessesPage() {
   const [editBiz,    setEditBiz]    = useState(null);   // business object or 'new'
   const [manageId,   setManageId]   = useState(null);   // businessId for user mgmt
   const [bizUsers,   setBizUsers]   = useState([]);     // users in manageId business
-  const [form,       setForm]       = useState({ code:'', name:'', tin:'', address:'', phone:'', email:'', booksStartDate:'' });
+  const [form,       setForm]       = useState({ code:'', name:'', tin:'', address:'', phone:'', email:'', companyType:'', taxType:'', booksStartDate:'' });
   const [resetBiz,    setResetBiz]    = useState(null);   // business object mid-confirm
   const [resetPhrase, setResetPhrase] = useState('');
   const [resetting,   setResetting]   = useState(false);
 
   const me = getUser();
   const isAdmin = ['ADMIN', 'SUPER_ADMIN'].includes(me?.role);
+  const router = useRouter();
 
   async function load() {
     try {
@@ -52,16 +54,21 @@ export default function BusinessesPage() {
     finally  { setLoading(false); }
   }
 
-  useEffect(() => { load(); }, []);
+  // Non-admins have their own page; don't fire the admin-only calls at all.
+  useEffect(() => {
+    if (!isAdmin) { router.replace('/my-businesses'); return; }
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Business create/update ──────────────────────────────────
   function openCreate() {
-    setForm({ code:'', name:'', tin:'', address:'', phone:'', email:'', booksStartDate:'' });
+    setForm({ code:'', name:'', tin:'', address:'', phone:'', email:'', companyType:'', taxType:'', booksStartDate:'' });
     setEditBiz('new');
   }
 
   function openEdit(biz) {
-    setForm({ code: biz.code, name: biz.name, tin: biz.tin||'', address: biz.address||'', phone: biz.phone||'', email: biz.email||'', booksStartDate: biz.booksStartDate?.split('T')[0] || '' });
+    setForm({ code: biz.code, name: biz.name, tin: biz.tin||'', address: biz.address||'', phone: biz.phone||'', email: biz.email||'', taxType: biz.taxType||'', booksStartDate: biz.booksStartDate?.split('T')[0] || '' });
     setEditBiz(biz);
   }
 
@@ -70,7 +77,7 @@ export default function BusinessesPage() {
     try {
       if (editBiz === 'new') {
         await bizApi.create(form);
-        toast.success('Business created — COA cloned from default');
+        toast.success('Business created — chart of accounts set up');
       } else {
         await bizApi.update(editBiz.id, form);
         toast.success('Business updated');
@@ -156,7 +163,7 @@ export default function BusinessesPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-800">
-                {['Code','Name','TIN','Status','Actions'].map((h) => (
+                {['Code','Name','Type','TIN','Status','Actions'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -166,6 +173,7 @@ export default function BusinessesPage() {
                 <tr key={biz.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
                   <td className="px-4 py-3 font-mono text-xs font-semibold text-blue-600 dark:text-blue-400">{biz.code}</td>
                   <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{biz.name}</td>
+                  <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{biz.industry || '—'}</td>
                   <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{biz.tin || '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`badge ${biz.isActive ? 'badge-green' : 'badge-red'}`}>
@@ -194,7 +202,7 @@ export default function BusinessesPage() {
                 </tr>
               ))}
               {!list.length && (
-                <tr><td colSpan={5} className="px-4 py-12 text-center text-gray-400">No businesses found</td></tr>
+                <tr><td colSpan={6} className="px-4 py-12 text-center text-gray-400">No businesses found</td></tr>
               )}
             </tbody>
           </table>
@@ -231,6 +239,32 @@ export default function BusinessesPage() {
               <div>
                 <label className="label">Address</label>
                 <input className="input" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} />
+              </div>
+              {editBiz === 'new' && (
+                <div>
+                  <label className="label">Company Type *</label>
+                  <select className="input" required value={form.companyType}
+                    onChange={e => setForm(f => ({ ...f, companyType: e.target.value }))}>
+                    <option value="">Select a type…</option>
+                    <option value="SCHOOL">School</option>
+                    <option value="SERVICES">Services / Agency</option>
+                    <option value="TRADING">Retail / Trading</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    A School gets the school chart of accounts, fee types, grade levels and payment
+                    schemes. Any other type has the School module hidden. This can&apos;t be changed later.
+                  </p>
+                </div>
+              )}
+              <div>
+                <label className="label">Tax Registration</label>
+                <select className="input" value={form.taxType}
+                  onChange={e => setForm(f => ({ ...f, taxType: e.target.value }))}>
+                  <option value="">Not specified</option>
+                  <option value="VAT">VAT-registered</option>
+                  <option value="NON_VAT">Non-VAT (percentage tax)</option>
+                </select>
               </div>
               <div>
                 <label className="label">Books Start Date</label>

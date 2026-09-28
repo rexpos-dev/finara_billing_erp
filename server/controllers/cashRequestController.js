@@ -254,6 +254,10 @@ exports.accountMap = (_req, res) => {
 
 // Fill in accountId for any line that arrived without one, using the same
 // keyword rules the browser used. Batched: one query for all needed codes.
+//
+// Only ACTIVE accounts qualify. A business can retire the accounts a rule points
+// at (a trading company drops the agency 50xx set); posting to one silently is
+// worse than landing in Miscellaneous, so such a line falls back to FALLBACK_ACCOUNT.
 const resolveLineAccounts = async (lines, businessId) => {
   const needing = lines.filter((l) => !l.accountId);
   if (!needing.length) return lines;
@@ -261,17 +265,20 @@ const resolveLineAccounts = async (lines, businessId) => {
   const wanted = new Map(); // description -> code
   for (const l of needing) wanted.set(l.description, matchAccountCode(l.description));
 
-  const codes = [...new Set(wanted.values())];
+  const codes = [...new Set([...wanted.values(), FALLBACK_ACCOUNT])];
   const accts = await prisma.account.findMany({
-    where: { accountCode: { in: codes }, businessId },
+    where: { accountCode: { in: codes }, businessId, isActive: true },
     select: { id: true, accountCode: true },
   });
   const byCode = new Map(accts.map((a) => [a.accountCode, a.id]));
 
   return lines.map((l) =>
-    l.accountId ? l : { ...l, accountId: byCode.get(wanted.get(l.description)) ?? null }
+    l.accountId
+      ? l
+      : { ...l, accountId: byCode.get(wanted.get(l.description)) ?? byCode.get(FALLBACK_ACCOUNT) ?? null }
   );
 };
+exports.resolveLineAccounts = resolveLineAccounts;
 
 // Settle the advance against receipts. Clears 1104 and books the real expense.
 exports.liquidate = async (req, res, next) => {

@@ -208,7 +208,8 @@ exports.convertPreview = async (req, res, next) => {
     if (q.status === 'CONVERTED') throw createError('Quotation already converted to an invoice', 400);
 
     const fallback = await prisma.account.findFirst({
-      where: { accountCode: DEFAULT_REVENUE_ACCOUNT, businessId: req.businessId },
+      // Only suggest it while it's active — a trading company retires 4100.
+      where: { accountCode: DEFAULT_REVENUE_ACCOUNT, businessId: req.businessId, isActive: true },
       select: { id: true },
     });
 

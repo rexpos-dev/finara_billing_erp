@@ -48,9 +48,13 @@ function matchCodeFor(description, rules = [], fallback = '6390') {
   return { accountCode: fallback, matched: false };
 }
 
-// Resolve a matched code to an account id within the loaded COA.
-const accountIdForCode = (accounts, code) =>
-  accounts.find((a) => a.accountCode === code)?.id || '';
+// Resolve a matched code to an account id within the loaded COA. Retired
+// (inactive) accounts are skipped, falling back to the default expense account,
+// so a trading company never gets an agency account suggested.
+const accountIdForCode = (accounts, code, fallback = '6390') => {
+  const usable = (c) => accounts.find((a) => a.accountCode === c && a.isActive !== false);
+  return (usable(code) || usable(fallback))?.id || '';
+};
 
 // ─── New / Edit Request Modal ─────────────────────────────────
 function RequestModal({ request, accounts, names, accountMap, onClose, onSaved }) {
@@ -88,7 +92,7 @@ function RequestModal({ request, accounts, names, accountMap, onClose, onSaved }
         // Typing a description re-runs the match until the user overrides it.
         if (k === 'description' && !next.accountTouched) {
           const { accountCode } = matchCodeFor(v, accountMap.rules, accountMap.fallback);
-          next.accountId = accountIdForCode(accounts, accountCode);
+          next.accountId = accountIdForCode(accounts, accountCode, accountMap.fallback);
         }
         return next;
       }),
@@ -369,7 +373,7 @@ function LiquidateModal({ request, accounts, accountMap, onClose, onDone }) {
       if (k === 'accountId') next.accountTouched = true;
       if (k === 'description' && !next.accountTouched) {
         const { accountCode } = matchCodeFor(v, accountMap.rules, accountMap.fallback);
-        next.accountId = accountIdForCode(accounts, accountCode);
+        next.accountId = accountIdForCode(accounts, accountCode, accountMap.fallback);
       }
       return next;
     }));
