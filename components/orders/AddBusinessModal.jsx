@@ -37,6 +37,11 @@ export default function AddBusinessModal({ order: initialOrder = null, onClose, 
   }, [order, plans.instructions.hasQr]);
 
   const price = plans.prices.find((p) => p.companyType === form.companyType && p.period === form.period);
+  const monthlyPrice = form.period === 'YEARLY'
+    ? plans.prices.find((p) => p.companyType === form.companyType && p.period === 'MONTHLY')
+    : null;
+  const savings = price && monthlyPrice ? Number(monthlyPrice.amount) * 12 - Number(price.amount) : 0;
+  const savingsPercent = savings > 0 ? Math.round((savings / (Number(monthlyPrice.amount) * 12)) * 100) : 0;
 
   const submitOrder = async (e) => {
     e.preventDefault();
@@ -129,7 +134,16 @@ export default function AddBusinessModal({ order: initialOrder = null, onClose, 
 
             <div className="rounded-lg bg-gray-50 dark:bg-gray-800 px-4 py-3 text-sm">
               {!form.companyType ? 'Choose a company type to see the price.'
-                : price ? <>Amount to pay: <strong>{formatCurrency(price.amount)}</strong></>
+                : price ? (
+                  <>
+                    Amount to pay: <strong>{formatCurrency(price.amount)}</strong>
+                    {savingsPercent > 0 && (
+                      <div className="text-green-600 text-xs mt-1">
+                        Save {savingsPercent}% — {formatCurrency(savings)} off vs. paying monthly
+                      </div>
+                    )}
+                  </>
+                )
                 : <span className="text-red-600">This plan is not available yet. Please contact the administrator.</span>}
             </div>
 

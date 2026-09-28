@@ -127,26 +127,103 @@ describe('reject', () => {
   });
 });
 
+describe('getPrices', () => {
+  test('returns discountPercent as stored, unmodified', async () => {
+    const stored = [
+      { companyType: 'SERVICES', period: 'MONTHLY', amount: 1000, isActive: true, discountPercent: 5 },
+      { companyType: 'SERVICES', period: 'YEARLY', amount: 11400, isActive: true, discountPercent: null },
+    ];
+    prisma.planPrice.findMany.mockResolvedValue(stored);
+    const out = await call(ctrl.getPrices, {});
+    expect(out).toEqual(stored);
+  });
+});
+
 describe('savePrices', () => {
+  beforeEach(() => {
+    prisma.planPrice.findMany.mockResolvedValue([]);
+  });
+
   test.each([
     [[{ companyType: 'HACK', period: 'MONTHLY', amount: 1 }]],
     [[{ companyType: 'SERVICES', period: 'WEEKLY', amount: 1 }]],
     [[{ companyType: 'SERVICES', period: 'MONTHLY', amount: -5 }]],
     [[{ companyType: 'SERVICES', period: 'MONTHLY', amount: 'abc' }]],
+    [[{ companyType: 'SERVICES', period: 'MONTHLY', amount: 100, discountPercent: -1 }]],
+    [[{ companyType: 'SERVICES', period: 'MONTHLY', amount: 100, discountPercent: 150 }]],
     ['nope'],
   ])('rejects invalid rows %#', async (prices) => {
     await expect(call(ctrl.savePrices, { body: { prices } })).rejects.toMatchObject({ statusCode: 400 });
     expect(prisma.planPrice.upsert).not.toHaveBeenCalled();
   });
 
-  test('upserts each row by (companyType, period)', async () => {
-    prisma.planPrice.findMany.mockResolvedValue([]);
+  test('upserts a monthly row by (companyType, period), defaulting discount to 0', async () => {
     await call(ctrl.savePrices, { body: { prices: [{ companyType: 'SERVICES', period: 'MONTHLY', amount: '499.5', isActive: true }] } });
     expect(prisma.planPrice.upsert).toHaveBeenCalledWith({
       where: { companyType_period: { companyType: 'SERVICES', period: 'MONTHLY' } },
-      update: { amount: 499.5, isActive: true },
-      create: { companyType: 'SERVICES', period: 'MONTHLY', amount: 499.5, isActive: true },
+      update: { amount: 499.5, isActive: true, discountPercent: 0 },
+      create: { companyType: 'SERVICES', period: 'MONTHLY', amount: 499.5, isActive: true, discountPercent: 0 },
     });
+  });
+
+  test('computes and stores the yearly amount from the monthly amount and discount in the same save', async () => {
+    await call(ctrl.savePrices, { body: { prices: [
+      { companyType: 'SERVICES', period: 'MONTHLY', amount: 1000, isActive: true, discountPercent: 10 },
+      { companyType: 'SERVICES', period: 'YEARLY', isActive: true },
+    ] } });
+    expect(prisma.planPrice.upsert).toHaveBeenCalledWith({
+      where: { companyType_period: { companyType: 'SERVICES', period: 'YEARLY' } },
+      update: { amount: 10800, isActive: true, discountPercent: null },
+      create: { companyType: 'SERVICES', period: 'YEARLY', amount: 10800, isActive: true, discountPercent: null },
+    });
+  });
+
+  test('ignores any client-sent yearly amount and recomputes it', async () => {
+    await call(ctrl.savePrices, { body: { prices: [
+      { companyType: 'SERVICES', period: 'MONTHLY', amount: 1000, isActive: true, discountPercent: 0 },
+      { companyType: 'SERVICES', period: 'YEARLY', amount: 99999, isActive: true },
+    ] } });
+    expect(prisma.planPrice.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { companyType_period: { companyType: 'SERVICES', period: 'YEARLY' } },
+      update: { amount: 12000, isActive: true, discountPercent: null },
+    }));
+  });
+
+  test('falls back to the existing monthly row in the database when only yearly is submitted', async () => {
+    prisma.planPrice.findMany.mockResolvedValueOnce([
+      { companyType: 'SERVICES', period: 'MONTHLY', amount: 1000, discountPercent: 5, isActive: true },
+    ]);
+    await call(ctrl.savePrices, { body: { prices: [{ companyType: 'SERVICES', period: 'YEARLY', isActive: true }] } });
+    expect(prisma.planPrice.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { period: 'MONTHLY', companyType: { in: ['SERVICES'] } },
+    }));
+    expect(prisma.planPrice.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { companyType_period: { companyType: 'SERVICES', period: 'YEARLY' } },
+      update: { amount: 11400, isActive: true, discountPercent: null },
+    }));
+    expect(prisma.planPrice.upsert).not.toHaveBeenCalledWith(expect.objectContaining({
+      where: { companyType_period: { companyType: 'SERVICES', period: 'MONTHLY' } },
+    }));
+  });
+
+  test('forces yearly inactive when there is no monthly price for that company type at all', async () => {
+    await call(ctrl.savePrices, { body: { prices: [{ companyType: 'SERVICES', period: 'YEARLY', isActive: true }] } });
+    expect(prisma.planPrice.upsert).toHaveBeenCalledWith({
+      where: { companyType_period: { companyType: 'SERVICES', period: 'YEARLY' } },
+      update: { amount: 0, isActive: false, discountPercent: null },
+      create: { companyType: 'SERVICES', period: 'YEARLY', amount: 0, isActive: false, discountPercent: null },
+    });
+  });
+
+  test('forces yearly inactive when the monthly price is not active, even if yearly is submitted active', async () => {
+    await call(ctrl.savePrices, { body: { prices: [
+      { companyType: 'SERVICES', period: 'MONTHLY', amount: 1000, isActive: false, discountPercent: 5 },
+      { companyType: 'SERVICES', period: 'YEARLY', isActive: true },
+    ] } });
+    expect(prisma.planPrice.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { companyType_period: { companyType: 'SERVICES', period: 'YEARLY' } },
+      update: expect.objectContaining({ isActive: false }),
+    }));
   });
 });
 

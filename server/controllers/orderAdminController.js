@@ -2,7 +2,7 @@ const prisma = require('../config/database');
 const { createError } = require('../middleware/errorHandler');
 const { recordAudit } = require('../utils/audit');
 const { COMPANY_TYPES } = require('../utils/companyTypes');
-const { PERIODS, computePaidUntil } = require('../utils/orderPricing');
+const { PERIODS, computePaidUntil, computeYearlyAmount } = require('../utils/orderPricing');
 const { createProvisionedBusiness } = require('../utils/provisionBusiness');
 const { removeStoredFile } = require('../utils/orderUploads');
 const logger = require('../utils/logger');
@@ -19,19 +19,72 @@ exports.savePrices = async (req, res, next) => {
   try {
     const { prices } = req.body;
     if (!Array.isArray(prices)) throw createError('prices must be a list', 400);
-    const rows = prices.map((p) => {
-      const amount = Number(p.amount);
+
+    const monthlyByType = {}; // companyType -> { amount, isActive, discountPercent }
+    const yearlyByType = {};  // companyType -> { isActive }
+
+    prices.forEach((p) => {
       if (!COMPANY_TYPES[p.companyType]) throw createError(`Unknown company type "${p.companyType}"`, 400);
       if (!PERIODS.includes(p.period)) throw createError(`Unknown period "${p.period}"`, 400);
-      if (!Number.isFinite(amount) || amount < 0) throw createError('Amounts must be zero or more', 400);
-      return { companyType: p.companyType, period: p.period, amount, isActive: p.isActive !== false };
+      const isActive = p.isActive !== false;
+
+      if (p.period === 'MONTHLY') {
+        const amount = Number(p.amount);
+        if (!Number.isFinite(amount) || amount < 0) throw createError('Amounts must be zero or more', 400);
+        const discountPercent = p.discountPercent === undefined || p.discountPercent === null || p.discountPercent === ''
+          ? 0 : Number(p.discountPercent);
+        if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+          throw createError('Discount must be between 0 and 100', 400);
+        }
+        monthlyByType[p.companyType] = { amount, isActive, discountPercent };
+      } else {
+        yearlyByType[p.companyType] = { isActive };
+      }
     });
-    await prisma.$transaction(rows.map((r) => prisma.planPrice.upsert({
-      where: { companyType_period: { companyType: r.companyType, period: r.period } },
-      update: { amount: r.amount, isActive: r.isActive },
-      create: r,
-    })));
-    await recordAudit({ req, action: 'UPDATE', entity: 'PlanPrice', summary: `Updated ${rows.length} plan price(s)` });
+
+    // Only company types genuinely submitted as MONTHLY should get a MONTHLY
+    // upsert. Captured before the DB-fallback lookup below mutates
+    // monthlyByType by merging in DB-only data for YEARLY-only submissions.
+    const submittedMonthlyTypes = new Set(Object.keys(monthlyByType));
+
+    // A YEARLY row's amount is always derived from its sibling MONTHLY row. If
+    // that sibling wasn't part of this save, fall back to the DB so the
+    // amount can still be computed correctly.
+    const missingTypes = Object.keys(yearlyByType).filter((t) => !monthlyByType[t]);
+    if (missingTypes.length) {
+      const existing = await prisma.planPrice.findMany({
+        where: { period: 'MONTHLY', companyType: { in: missingTypes } },
+      });
+      existing.forEach((row) => {
+        monthlyByType[row.companyType] = {
+          amount: Number(row.amount), isActive: row.isActive, discountPercent: Number(row.discountPercent || 0),
+        };
+      });
+    }
+
+    const ops = [];
+    submittedMonthlyTypes.forEach((companyType) => {
+      const m = monthlyByType[companyType];
+      ops.push(prisma.planPrice.upsert({
+        where: { companyType_period: { companyType, period: 'MONTHLY' } },
+        update: { amount: m.amount, isActive: m.isActive, discountPercent: m.discountPercent },
+        create: { companyType, period: 'MONTHLY', amount: m.amount, isActive: m.isActive, discountPercent: m.discountPercent },
+      }));
+    });
+    Object.entries(yearlyByType).forEach(([companyType, y]) => {
+      const m = monthlyByType[companyType];
+      // "Blank/not offered": no monthly row exists, or it isn't active — nothing to compute from.
+      const canOffer = !!m && m.isActive;
+      const amount = m ? computeYearlyAmount(m.amount, m.discountPercent) : 0;
+      ops.push(prisma.planPrice.upsert({
+        where: { companyType_period: { companyType, period: 'YEARLY' } },
+        update: { amount, isActive: canOffer && y.isActive, discountPercent: null },
+        create: { companyType, period: 'YEARLY', amount, isActive: canOffer && y.isActive, discountPercent: null },
+      }));
+    });
+
+    await prisma.$transaction(ops);
+    await recordAudit({ req, action: 'UPDATE', entity: 'PlanPrice', summary: `Updated ${ops.length} plan price(s)` });
     res.json(await prisma.planPrice.findMany({ orderBy: [{ companyType: 'asc' }, { period: 'asc' }] }));
   } catch (err) { next(err); }
 };

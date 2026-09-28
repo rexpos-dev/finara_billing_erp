@@ -14,4 +14,13 @@ function computePaidUntil(from, period) {
   return d;
 }
 
-module.exports = { PERIODS, computePaidUntil };
+/** monthlyAmount x 12, less discountPercent (0-100), rounded to the nearest centavo. */
+function computeYearlyAmount(monthlyAmount, discountPercent) {
+  const amount = Number(monthlyAmount);
+  const discount = Number(discountPercent);
+  if (!Number.isFinite(amount) || amount < 0) throw new Error('Invalid monthly amount');
+  if (!Number.isFinite(discount) || discount < 0 || discount > 100) throw new Error('Invalid discount percent');
+  return Math.round(amount * 12 * (1 - discount / 100) * 100) / 100;
+}
+
+module.exports = { PERIODS, computePaidUntil, computeYearlyAmount };

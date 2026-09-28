@@ -1945,6 +1945,10 @@ model PlanPrice {
   period      OrderPeriod
   amount      Decimal     @db.Decimal(12, 2)
   isActive    Boolean     @default(true)
+  // Only meaningful on the MONTHLY row: the YEARLY row's `amount` is derived
+  // from the sibling MONTHLY row's amount and this percentage (see
+  // orderAdminController.savePrices / computeYearlyAmount).
+  discountPercent Decimal? @db.Decimal(5, 2)
   updatedAt   DateTime    @updatedAt
 
   @@unique([companyType, period])
